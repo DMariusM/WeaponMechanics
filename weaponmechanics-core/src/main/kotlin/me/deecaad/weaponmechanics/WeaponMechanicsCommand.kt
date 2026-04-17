@@ -1001,7 +1001,7 @@ object WeaponMechanicsCommand {
                 val exposure = RegistryUtil.matchAny(ExplosionExposures.REGISTRY, exposureString)
                 val explosion =
                     Explosion(
-                        shape, exposure, blockDamage, regeneration, null, 0.0, 1.0,
+                        shape, exposure, false, blockDamage, regeneration, null, 0.0, 1.0,
                         null, null, Flashbang(10.0, null), null,
                     )
                 explosion.explode(cause, origin, null)

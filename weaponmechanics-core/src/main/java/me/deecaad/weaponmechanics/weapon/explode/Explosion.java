@@ -9,7 +9,6 @@ import me.deecaad.core.file.*;
 import me.deecaad.core.file.serializers.ChanceSerializer;
 import me.deecaad.core.mechanics.CastData;
 import me.deecaad.core.mechanics.MechanicManager;
-import me.deecaad.core.mechanics.Mechanics;
 import me.deecaad.core.utils.RandomUtil;
 import me.deecaad.core.utils.VectorUtil;
 import me.deecaad.weaponmechanics.WeaponMechanics;
@@ -46,6 +45,7 @@ import org.bukkit.util.Vector;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -55,6 +55,7 @@ public class Explosion implements Serializer<Explosion> {
 
     private ExplosionShape shape;
     private ExplosionExposure exposure;
+    private boolean showDefaultParticles = true;
     private BlockDamage blockDamage;
     private RegenerationData regeneration;
     private Detonation detonation;
@@ -90,12 +91,13 @@ public class Explosion implements Serializer<Explosion> {
      * @param flashbang The nullable flashbang (To blind players).
      * @param mechanics The nullable mechanics, spawned at the origin of the explosion.
      */
-    public Explosion(ExplosionShape shape, ExplosionExposure exposure, BlockDamage blockDamage,
+    public Explosion(ExplosionShape shape, ExplosionExposure exposure, boolean showDefaultParticles, BlockDamage blockDamage,
         RegenerationData regeneration, Detonation detonation, double blockChance, double knockbackRate,
         ClusterBomb clusterBomb, AirStrike airStrike, Flashbang flashbang, MechanicManager mechanics) {
 
         this.shape = shape;
         this.exposure = exposure;
+        this.showDefaultParticles = showDefaultParticles;
         this.blockDamage = blockDamage;
         this.regeneration = regeneration;
         this.detonation = detonation;
@@ -198,7 +200,6 @@ public class Explosion implements Serializer<Explosion> {
     public void explode(LivingEntity cause, Location origin, WeaponProjectile projectile) {
 
         // Grab these once
-        Configuration config = WeaponMechanics.getInstance().getConfiguration();
         MechanicsLogger debugger = WeaponMechanics.getInstance().getDebugger();
 
         // Handle worldguard flags
@@ -225,6 +226,10 @@ public class Explosion implements Serializer<Explosion> {
         if (projectile != null && airStrike != null && projectile.getIntTag("airstrike-bomb") == 0) {
             airStrike.trigger(origin, cause, projectile);
             return;
+        }
+
+        if (!showDefaultParticles) {
+            markSuppressedExplosion(origin, shape.getMaxDistance());
         }
 
         List<Block> blocks = shape.getBlocks(origin);
@@ -330,6 +335,53 @@ public class Explosion implements Serializer<Explosion> {
         }
     }
 
+    // Default explosion particle suppression helpers
+    private record ExplosionMark(String world, double x, double y, double z, double radiusSq, long time) {
+    }
+
+    private static final List<ExplosionMark> SUPPRESSED_EXPLOSIONS = new CopyOnWriteArrayList<>();
+    private static final long SUPPRESSION_TTL_MS = 500L;
+    private static final double SUPPRESSION_RADIUS_BUFFER = 2.0;
+
+    private static void markSuppressedExplosion(Location location, double maxDistance) {
+        if (location == null || location.getWorld() == null) {
+            return;
+        }
+
+        double radius = Math.max(0.0, maxDistance + SUPPRESSION_RADIUS_BUFFER);
+
+        SUPPRESSED_EXPLOSIONS.add(new ExplosionMark(
+                location.getWorld().getName(),
+                location.getX(),
+                location.getY(),
+                location.getZ(),
+                radius * radius,
+                System.currentTimeMillis()
+        ));
+    }
+
+    static boolean shouldSuppressDefaultParticles(String world, double x, double y, double z) {
+        long now = System.currentTimeMillis();
+        SUPPRESSED_EXPLOSIONS.removeIf(mark -> now - mark.time() > SUPPRESSION_TTL_MS);
+
+        for (ExplosionMark mark : SUPPRESSED_EXPLOSIONS) {
+            if (!mark.world().equals(world)) {
+                continue;
+            }
+
+            double dx = x - mark.x();
+            double dy = y - mark.y();
+            double dz = z - mark.z();
+            double distSq = dx * dx + dy * dy + dz * dz;
+
+            if (distSq <= mark.radiusSq()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     protected void damageBlocks(List<Block> blocks, boolean isAtOnce, Location origin, int timeOffset, PlayerWrapper playerWrapper, WeaponProjectile projectile) {
         boolean isRegenerate = regeneration != null;
 
@@ -337,7 +389,6 @@ public class Explosion implements Serializer<Explosion> {
             timeOffset += regeneration.getTicksBeforeStart();
 
         List<BlockDamageData.DamageData> brokenBlocks = isRegenerate ? new ArrayList<>(regeneration.getMaxBlocksPerUpdate()) : null;
-        Location temp = new Location(null, 0, 0, 0);
 
         int blocksBroken = 0;
 
@@ -439,6 +490,8 @@ public class Explosion implements Serializer<Explosion> {
                 .getBukkitRegistry(ExplosionShape.class, ExplosionShapes.REGISTRY)
                 .orElse(new DefaultExplosion());
 
+        boolean showDefaultParticles = data.of("Show_Default_Particles").getBool().orElse(true);
+
         ExplosionExposure exposure = data.of("Explosion_Type_Data").serialize(exposureSerializer).get();
         ExplosionShape shape = data.of("Explosion_Type_Data").serialize(shapeSerializer).get();
 
@@ -474,7 +527,7 @@ public class Explosion implements Serializer<Explosion> {
         Flashbang flashbang = data.of("Flashbang").serialize(Flashbang.class).orElse(null);
         MechanicManager mechanics = data.of("Mechanics").serialize(MechanicManager.class).orElse(null);
 
-        return new Explosion(shape, exposure, blockDamage, regeneration, detonation, blockChance,
+        return new Explosion(shape, exposure, showDefaultParticles, blockDamage, regeneration, detonation, blockChance,
             knockbackRate, clusterBomb, airStrike, flashbang, mechanics);
     }
 }
